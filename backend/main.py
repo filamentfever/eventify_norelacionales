@@ -4,7 +4,8 @@ from backend.controllers import (
     eventos_controller,
     usuarios_controller,
     orden_controller,
-    resenas_controller
+    resenas_controller,
+    dashboard_controller
 )
 
 tags_metadata = [
@@ -27,6 +28,10 @@ tags_metadata = [
     {
         "name": "Reseñas",
         "description": "Consulta de reseñas y evaluaciones"
+    },
+    {
+        "name": "Dashboard",
+        "description": "KPIs y consultas analíticas"
     }
 ]
 
@@ -38,8 +43,9 @@ app = FastAPI(
 
 app.include_router(eventos_controller.router)
 app.include_router(usuarios_controller.router)
-app.include_router(ordenes_controller.router)
+app.include_router(orden_controller.router)
 app.include_router(resenas_controller.router)
+app.include_router(dashboard_controller.router)
 
 
 @app.get("/", tags=["General"])
