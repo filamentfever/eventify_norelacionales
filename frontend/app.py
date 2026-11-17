@@ -25,6 +25,106 @@ def pedir(metodo, ruta, **kwargs):
     return r.json(), None
 
 
+ESTADOS = ["programado", "finalizado", "cancelado"]
+TICKET_BASE = {"tipo": "General", "precio": 15000, "stock_inicial": 100,
+               "stock_disponible": 100, "es_vip": False}
+
+
+def formulario_evento(prefijo, ev=None, n_tickets=1):
+    """Dibuja los campos del evento (se usa dentro de un st.form).
+    Devuelve (payload, errores). El envío lo decide st.form_submit_button,
+    y si hay errores el evento NO se manda a la API."""
+    nuevo = ev is None
+    ev = ev or {}
+    rec = ev.get("recinto", {})
+    coord = rec.get("coordenadas", {})
+    tickets = ev.get("tickets_disponibles") or [TICKET_BASE]
+    errores = []
+
+    try:
+        fecha_dt = datetime.fromisoformat(str(ev["fecha_evento"]).replace("Z", ""))
+    except (KeyError, ValueError):
+        fecha_dt = datetime.now()
+    fecha_dt = fecha_dt.replace(second=0, microsecond=0)
+
+    estados = ESTADOS if ev.get("estado", "programado") in ESTADOS else ESTADOS + [ev["estado"]]
+    k = lambda campo: f"{prefijo}_{campo}"
+
+    a, b = st.columns(2)
+    nombre = a.text_input("Nombre", ev.get("nombre", ""), key=k("nombre"))
+    codigo = b.text_input("Código lugar", ev.get("codigo_lugar", "REC-TEMU-01"), key=k("codigo"))
+    categoria = a.text_input("Categoría", ev.get("categoria", "Concierto"), key=k("categoria"))
+    estado = b.selectbox("Estado", estados, index=estados.index(ev.get("estado", "programado")),
+                         key=k("estado"))
+    descripcion = st.text_area("Descripción", ev.get("descripcion", ""), key=k("descripcion"))
+    fecha = a.date_input("Fecha del evento", fecha_dt.date(), key=k("fecha"))
+    hora = b.time_input("Hora", fecha_dt.time(), key=k("hora"))
+
+    st.write("Recinto")
+    r1, r2 = st.columns(2)
+    rec_nombre = r1.text_input("Nombre del recinto", rec.get("nombre", ""), key=k("rec_nombre"))
+    rec_dir = r2.text_input("Dirección", rec.get("direccion", ""), key=k("rec_dir"))
+    rec_ciudad = r1.text_input("Ciudad", rec.get("ciudad", ""), key=k("rec_ciudad"))
+    rec_cap = r2.number_input("Capacidad", min_value=1, value=int(rec.get("capacidad", 1000)),
+                              key=k("rec_cap"))
+    rec_lat = r1.number_input("Latitud", value=float(coord.get("latitud", -38.733)),
+                              format="%.4f", key=k("rec_lat"))
+    rec_lon = r2.number_input("Longitud", value=float(coord.get("longitud", -72.615)),
+                              format="%.4f", key=k("rec_lon"))
+
+    st.write("Tickets")
+    lista_tickets = []
+    for i in range(n_tickets):
+        base = tickets[i] if i < len(tickets) else TICKET_BASE
+        cols = st.columns(4 if nuevo else 5)
+        tipo = cols[0].text_input("Tipo", base["tipo"], key=k(f"t{i}_tipo"))
+        precio = cols[1].number_input("Precio", min_value=0.0, value=float(base["precio"]),
+                                      step=1000.0, key=k(f"t{i}_precio"))
+        inicial = cols[2].number_input("Stock inicial", min_value=0,
+                                       value=int(base["stock_inicial"]), key=k(f"t{i}_ini"))
+        if nuevo:
+            disponible = inicial
+            vip = cols[3].checkbox("VIP", base["es_vip"], key=k(f"t{i}_vip"))
+        else:
+            disponible = cols[3].number_input("Stock disponible", min_value=0,
+                                              value=int(base["stock_disponible"]),
+                                              key=k(f"t{i}_disp"))
+            vip = cols[4].checkbox("VIP", base["es_vip"], key=k(f"t{i}_vip"))
+        if disponible > inicial:
+            errores.append(f"Ticket {i + 1}: el stock disponible no puede superar al inicial.")
+        lista_tickets.append({"tipo": tipo, "precio": precio, "stock_inicial": int(inicial),
+                              "stock_disponible": int(disponible), "es_vip": vip})
+
+    # Validación: ningún campo de texto obligatorio puede ir vacío
+    obligatorios = {
+        "Nombre": nombre, "Código lugar": codigo, "Categoría": categoria,
+        "Descripción": descripcion, "Nombre del recinto": rec_nombre,
+        "Dirección": rec_dir, "Ciudad": rec_ciudad
+    }
+    for etiqueta, valor in obligatorios.items():
+        if not valor.strip():
+            errores.append(f"{etiqueta} es obligatorio.")
+    for i, t in enumerate(lista_tickets):
+        if not t["tipo"].strip():
+            errores.append(f"Ticket {i + 1}: el tipo es obligatorio.")
+
+    payload = {
+        "codigo_lugar": codigo,
+        "nombre": nombre,
+        "categoria": categoria,
+        "descripcion": descripcion,
+        "fecha_evento": datetime.combine(fecha, hora).isoformat(),
+        "estado": estado,
+        "recinto": {
+            "nombre": rec_nombre, "direccion": rec_dir, "ciudad": rec_ciudad,
+            "capacidad": int(rec_cap),
+            "coordenadas": {"latitud": rec_lat, "longitud": rec_lon}
+        },
+        "tickets_disponibles": lista_tickets
+    }
+    return payload, errores
+
+
 st.title("🎟️ Eventify Analytics")
 
 # ---------------------------------------------------------------- KPIs
@@ -155,71 +255,36 @@ with tab5:
         } for e in eventos])
         st.dataframe(tabla, use_container_width=True)
 
-    # ---- Alta
+    # ---- Alta (st.form + validación: un evento incompleto nunca se envía)
     st.subheader("➕ Agregar evento")
-    with st.form("form_crear", clear_on_submit=True):
-        a, b = st.columns(2)
-        nombre = a.text_input("Nombre")
-        codigo = b.text_input("Código lugar", "REC-TEMU-01")
-        categoria = a.text_input("Categoría", "Concierto")
-        estado = b.selectbox("Estado", ["programado", "finalizado", "cancelado"])
-        descripcion = st.text_area("Descripción")
-        fecha = a.date_input("Fecha del evento")
-        hora = b.time_input("Hora")
+    n_crear = st.session_state.setdefault("n_crear", 0)  # cambia al crear → limpia el formulario
 
-        st.write("Recinto")
-        r1, r2 = st.columns(2)
-        rec_nombre = r1.text_input("Nombre del recinto")
-        rec_dir = r2.text_input("Dirección")
-        rec_ciudad = r1.text_input("Ciudad")
-        rec_cap = r2.number_input("Capacidad", min_value=1, value=1000)
-        rec_lat = r1.number_input("Latitud", value=-38.733, format="%.4f")
-        rec_lon = r2.number_input("Longitud", value=-72.615, format="%.4f")
+    # Este selector va FUERA del st.form para que los campos de tickets se actualicen al instante
+    n_tickets = st.number_input("Cantidad de tipos de ticket", min_value=1, max_value=10,
+                                value=1, key=f"crear{n_crear}_n_tickets")
 
-        st.write("Ticket")
-        t1, t2, t3, t4 = st.columns(4)
-        t_tipo = t1.text_input("Tipo", "General")
-        t_precio = t2.number_input("Precio", min_value=0, value=15000, step=1000)
-        t_stock = t3.number_input("Stock", min_value=0, value=100)
-        t_vip = t4.checkbox("VIP")
-
+    with st.form(f"form_crear_{n_crear}"):
+        payload, errores = formulario_evento(f"crear{n_crear}", n_tickets=int(n_tickets))
         enviar = st.form_submit_button("Crear evento")
 
     if enviar:
-        payload = {
-            "codigo_lugar": codigo,
-            "nombre": nombre,
-            "categoria": categoria,
-            "descripcion": descripcion,
-            "fecha_evento": datetime.combine(fecha, hora).isoformat(),
-            "estado": estado,
-            "recinto": {
-                "nombre": rec_nombre,
-                "direccion": rec_dir,
-                "ciudad": rec_ciudad,
-                "capacidad": int(rec_cap),
-                "coordenadas": {"latitud": rec_lat, "longitud": rec_lon}
-            },
-            "tickets_disponibles": [{
-                "tipo": t_tipo,
-                "precio": t_precio,
-                "stock_inicial": int(t_stock),
-                "stock_disponible": int(t_stock),
-                "es_vip": t_vip
-            }]
-        }
-        _, error = pedir("POST", "/eventos/", json=payload)
-        if error:
-            st.error(error)
+        if errores:
+            for msg in errores:
+                st.error(msg)
         else:
-            st.toast("Evento creado correctamente ✅")
-            st.rerun()
+            _, error = pedir("POST", "/eventos/", json=payload)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["n_crear"] += 1
+                st.toast("Evento creado correctamente ✅")
+                st.rerun()
 
     if eventos:
         opciones = {f"{e['nombre']} ({e['recinto']['ciudad']})": e["_id"] for e in eventos}
 
-        # ---- Modificación
-        st.subheader("✏️ Actualizar precios de un evento")
+        # ---- Modificación (evento completo)
+        st.subheader("✏️ Modificar evento")
         elegido = st.selectbox("Evento", list(opciones.keys()), key="sel_editar")
         evento_id = opciones[elegido]
         evento, error = pedir("GET", f"/eventos/{evento_id}")
@@ -227,25 +292,26 @@ with tab5:
         if error:
             st.error(error)
         else:
+            n_tickets_ed = st.number_input("Cantidad de tipos de ticket", min_value=1, max_value=10,
+                                           value=len(evento["tickets_disponibles"]),
+                                           key=f"editar_{evento_id}_n_tickets")
+
             with st.form(f"form_editar_{evento_id}"):
-                nuevos_precios = []
-                for i, t in enumerate(evento["tickets_disponibles"]):
-                    nuevos_precios.append(st.number_input(
-                        f"Precio de {t['tipo']}", min_value=0.0,
-                        value=float(t["precio"]), step=1000.0, key=f"p_{evento_id}_{i}"
-                    ))
+                payload_ed, errores_ed = formulario_evento(
+                    f"editar_{evento_id}", evento, int(n_tickets_ed))
                 guardar = st.form_submit_button("Guardar cambios")
 
             if guardar:
-                evento.pop("_id")
-                for t, precio in zip(evento["tickets_disponibles"], nuevos_precios):
-                    t["precio"] = precio
-                _, error = pedir("PUT", f"/eventos/{evento_id}", json=evento)
-                if error:
-                    st.error(error)
+                if errores_ed:
+                    for msg in errores_ed:
+                        st.error(msg)
                 else:
-                    st.toast("Precios actualizados ✅")
-                    st.rerun()
+                    _, error = pedir("PUT", f"/eventos/{evento_id}", json=payload_ed)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.toast("Evento actualizado ✅")
+                        st.rerun()
 
         # ---- Baja
         st.subheader("🗑️ Eliminar evento")
