@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 
-from backend.controllers import eventos_controller
+from backend.controllers import (
+    eventos_controller,
+    usuarios_controller,
+    orden_controller,
+    resenas_controller
+)
 
 tags_metadata = [
     {
@@ -10,6 +15,18 @@ tags_metadata = [
     {
         "name": "Eventos",
         "description": "CRUD de eventos"
+    },
+    {
+        "name": "Usuarios",
+        "description": "Gestión de usuarios"
+    },
+    {
+        "name": "Órdenes de compra",
+        "description": "Consulta de órdenes de compra"
+    },
+    {
+        "name": "Reseñas",
+        "description": "Consulta de reseñas y evaluaciones"
     }
 ]
 
@@ -20,6 +37,9 @@ app = FastAPI(
 )
 
 app.include_router(eventos_controller.router)
+app.include_router(usuarios_controller.router)
+app.include_router(ordenes_controller.router)
+app.include_router(resenas_controller.router)
 
 
 @app.get("/", tags=["General"])
