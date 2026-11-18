@@ -38,7 +38,10 @@ def crear_evento(evento: Evento):
 
 @router.put("/{evento_id}")
 def modificar_evento(evento_id: str, evento: Evento):
-    resultado = actualizar_evento(evento_id, evento)
+    try:
+        resultado = actualizar_evento(evento_id, evento)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     if not resultado:
         raise HTTPException(
             status_code=404,
@@ -49,7 +52,11 @@ def modificar_evento(evento_id: str, evento: Evento):
 
 @router.delete("/{evento_id}")
 def borrar_evento(evento_id: str):
-    resultado = eliminar_evento(evento_id)
+    """Baja lógica: cancela el evento y anula sus órdenes (no borra datos)."""
+    try:
+        resultado = eliminar_evento(evento_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     if not resultado:
         raise HTTPException(
             status_code=404,

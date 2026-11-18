@@ -195,18 +195,55 @@ with tab2:
         df = pd.DataFrame(datos)
         colores = {"Exitoso": "#2ca02c", "Por Mejorar": "#d62728"}
 
-        fig1 = px.bar(df, x="evento", y="total_recaudado", color="etiqueta",
-                      color_discrete_map=colores, title="Total recaudado por evento",
-                      labels={"total_recaudado": "Recaudado ($)"})
+        # Resumen general
+        exitosos = int((df["etiqueta"] == "Exitoso").sum())
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Eventos con ventas", len(df))
+        m2.metric("Exitosos (≥ 40% vendido)", exitosos)
+        m3.metric("Por mejorar", len(df) - exitosos)
+
+        # Cuántos eventos mostrar en los gráficos
+        if len(df) > 5:
+            top = st.slider("Eventos a mostrar (los de mayor recaudación)",
+                            5, len(df), min(10, len(df)))
+        else:
+            top = len(df)
+        df_top = df.nlargest(top, "total_recaudado")
+
+        fig1 = px.bar(df_top, x="total_recaudado", y="evento", orientation="h",
+                      color="etiqueta", color_discrete_map=colores,
+                      text="total_recaudado",
+                      hover_data=["ciudad", "tickets_vendidos", "porcentaje_venta"],
+                      title=f"Top {top} eventos por recaudación",
+                      labels={"total_recaudado": "Recaudado ($)", "evento": "",
+                              "etiqueta": "Clasificación"})
+        fig1.update_traces(texttemplate="$%{x:,.0f}", textposition="outside", cliponaxis=False)
+        fig1.update_layout(yaxis={"categoryorder": "total ascending"},
+                           height=max(350, 45 * top), legend_title_text="")
         st.plotly_chart(fig1, use_container_width=True)
 
-        fig2 = px.bar(df, x="evento", y="porcentaje_venta", color="etiqueta",
-                      color_discrete_map=colores, title="Ocupación (% del stock inicial vendido)",
-                      labels={"porcentaje_venta": "% vendido"})
-        fig2.add_hline(y=40, line_dash="dash", annotation_text="Umbral 'Exitoso' (40%)")
+        fig2 = px.bar(df_top, x="porcentaje_venta", y="evento", orientation="h",
+                      color="etiqueta", color_discrete_map=colores,
+                      text="porcentaje_venta",
+                      hover_data=["ciudad", "tickets_vendidos", "stock_inicial_total"],
+                      title=f"Ocupación de los Top {top} (% del stock inicial vendido)",
+                      labels={"porcentaje_venta": "% vendido", "evento": "",
+                              "etiqueta": "Clasificación"})
+        fig2.update_traces(texttemplate="%{x}%", textposition="outside", cliponaxis=False)
+        fig2.add_vline(x=40, line_dash="dash", annotation_text="Umbral 'Exitoso' (40%)")
+        fig2.update_layout(yaxis={"categoryorder": "total ascending"},
+                           xaxis_range=[0, max(100, df_top["porcentaje_venta"].max() * 1.1)],
+                           height=max(350, 45 * top), legend_title_text="")
         st.plotly_chart(fig2, use_container_width=True)
 
-        st.dataframe(df, use_container_width=True)
+        st.write("Detalle completo")
+        st.dataframe(
+            df, use_container_width=True, hide_index=True,
+            column_config={
+                "total_recaudado": st.column_config.NumberColumn("Recaudado", format="$%d"),
+                "porcentaje_venta": st.column_config.NumberColumn("% vendido", format="%.1f"),
+            }
+        )
 
 # ---------------------------------------------------- Consulta 3
 with tab3:
@@ -246,14 +283,19 @@ with tab5:
     st.subheader("Eventos registrados")
     if eventos:
         tabla = pd.DataFrame([{
-            "nombre": e["nombre"],
-            "categoria": e["categoria"],
-            "ciudad": e["recinto"]["ciudad"],
-            "estado": e["estado"],
-            "fecha_evento": e["fecha_evento"],
+            "Nombre": e["nombre"],
+            "Categoría": e["categoria"],
+            "Ciudad": e["recinto"]["ciudad"],
+            "Estado": e["estado"],
+            "Fecha": e["fecha_evento"][:16].replace("T", " "),
             "_id": e["_id"]
-        } for e in eventos])
-        st.dataframe(tabla, use_container_width=True)
+        } for e in eventos]).sort_values("Fecha")
+
+        mostrar_ids = st.checkbox("Mostrar IDs técnicos (MongoDB)", value=False)
+        if not mostrar_ids:
+            tabla = tabla.drop(columns="_id")
+
+        st.dataframe(tabla, use_container_width=True, hide_index=True)
 
     # ---- Alta (st.form + validación: un evento incompleto nunca se envía)
     st.subheader("➕ Agregar evento")
@@ -313,15 +355,26 @@ with tab5:
                         st.toast("Evento actualizado ✅")
                         st.rerun()
 
-        # ---- Baja
-        st.subheader("🗑️ Eliminar evento")
-        st.caption("Ojo: elimina solo eventos de prueba. Los eventos con órdenes de compra "
-                   "dejarían esas órdenes sin evento.")
-        a_borrar = st.selectbox("Evento a eliminar", list(opciones.keys()), key="sel_borrar")
-        if st.button("Eliminar"):
-            _, error = pedir("DELETE", f"/eventos/{opciones[a_borrar]}")
-            if error:
-                st.error(error)
-            else:
-                st.toast("Evento eliminado ✅")
-                st.rerun()
+        # ---- Baja lógica 
+        st.subheader("🗑️ Dar de baja un evento")
+        st.caption("El evento pasa a estado 'cancelado' y sus órdenes pagadas quedan anuladas, "
+                   "por lo que los KPIs se actualizan. Los eventos finalizados no se pueden dar de baja.")
+
+        dables = {
+            f"{e['nombre']} ({e['recinto']['ciudad']})": e["_id"]
+            for e in eventos if e["estado"] == "programado"
+        }
+        if not dables:
+            st.info("No hay eventos programados para dar de baja.")
+        else:
+            a_baja = st.selectbox("Evento a dar de baja", list(dables.keys()), key="sel_baja")
+            id_baja = dables[a_baja]
+            confirmar = st.checkbox("Entiendo que las órdenes pagadas de este evento quedarán anuladas",
+                                    key=f"chk_baja_{id_baja}")
+            if st.button("Dar de baja", disabled=not confirmar):
+                datos, error = pedir("DELETE", f"/eventos/{id_baja}")
+                if error:
+                    st.error(error)
+                else:
+                    st.toast(f"Evento dado de baja. Órdenes anuladas: {datos['ordenes_anuladas']} ✅")
+                    st.rerun()
