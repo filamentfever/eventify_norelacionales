@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.database import db
 
@@ -146,76 +146,66 @@ class DashboardService:
     @staticmethod
     def ventas_por_evento():
         """Consulta 2: recaudación, ocupación y clasificación por evento."""
-        return list(db.ordenes_compra.aggregate([
-            {"$match": {"estado": "pagada"}},
-            {
-                "$project": {
-                    "evento_id": 1,
-                    "total": 1,
-                    "tickets_orden": {"$sum": "$items.cantidad"}
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$evento_id",
-                    "total_recaudado": {"$sum": "$total"},
-                    "tickets_vendidos": {"$sum": "$tickets_orden"}
-                }
-            },
+        return list(db.eventos.aggregate([
+            {"$match": {"estado": {"$in": ["programado", "finalizado"]}}},
             {
                 "$lookup": {
-                    "from": "eventos",
+                    "from": "ordenes_compra",
                     "localField": "_id",
-                    "foreignField": "_id",
-                    "as": "evento"
+                    "foreignField": "evento_id",
+                    "pipeline": [
+                        {"$match": {"estado": "pagada"}},
+                        {
+                            "$project": {
+                                "total": 1,
+                                "cantidad": {"$sum": "$items.cantidad"}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_recaudado": {"$sum": "$total"},
+                                "tickets_vendidos": {"$sum": "$cantidad"}
+                            }
+                        }
+                    ],
+                    "as": "ventas"
                 }
             },
-            {"$unwind": "$evento"},
             {
                 "$project": {
                     "_id": 0,
-                    "evento": "$evento.nombre",
-                    "ciudad": "$evento.recinto.ciudad",
-                    "estado_evento": "$evento.estado",
-                    "total_recaudado": 1,
-                    "tickets_vendidos": 1,
-                    "stock_inicial_total": {"$sum": "$evento.tickets_disponibles.stock_inicial"}
+                    "evento": "$nombre",
+                    "ciudad": "$recinto.ciudad",
+                    "estado_evento": "$estado",
+                    "total_recaudado": {"$sum": "$ventas.total_recaudado"},
+                    "tickets_vendidos": {"$sum": "$ventas.tickets_vendidos"},
+                    "stock_inicial_total": {"$sum": "$tickets_disponibles.stock_inicial"}
                 }
             },
             {
-                "$project": {
-                    "evento": 1,
-                    "ciudad": 1,
-                    "estado_evento": 1,
-                    "total_recaudado": 1,
-                    "tickets_vendidos": 1,
-                    "stock_inicial_total": 1,
+                "$set": {
                     "porcentaje_venta": {
-                        "$round": [
+                        "$cond": [
+                            {"$gt": ["$stock_inicial_total", 0]},
                             {"$multiply": [
                                 {"$divide": ["$tickets_vendidos", "$stock_inicial_total"]},
                                 100
                             ]},
-                            1
+                            0
                         ]
                     }
                 }
             },
             {
-                "$project": {
-                    "evento": 1,
-                    "ciudad": 1,
-                    "estado_evento": 1,
-                    "total_recaudado": 1,
-                    "tickets_vendidos": 1,
-                    "stock_inicial_total": 1,
-                    "porcentaje_venta": 1,
+                "$set": {
                     "etiqueta": {
                         "$cond": [{"$gte": ["$porcentaje_venta", 40]}, "Exitoso", "Por Mejorar"]
-                    }
+                    },
+                    "porcentaje_venta": {"$round": ["$porcentaje_venta", 1]}
                 }
             },
-            {"$sort": {"total_recaudado": -1}}
+            {"$sort": {"total_recaudado": -1, "evento": 1}}
         ]))
 
     @staticmethod
@@ -225,7 +215,7 @@ class DashboardService:
             {
                 "$match": {
                     "recinto.ciudad": ciudad,
-                    "fecha_evento": {"$gt": datetime.now()},
+                    "fecha_evento": {"$gt": datetime.now(timezone.utc)},
                     "estado": "programado"
                 }
             },
@@ -269,6 +259,7 @@ class DashboardService:
                     "categoria": 1,
                     "recinto": 1,
                     "fecha_evento": 1,
+                    "resenas": 1,
                     "total_resenas": {"$size": "$resenas"},
                     "promedio_puntuacion": {
                         "$round": [{"$ifNull": [{"$avg": "$resenas.puntuacion"}, 0]}, 1]
@@ -284,6 +275,16 @@ class DashboardService:
                     "fecha": {"$dateToString": {"format": "%d-%m-%Y", "date": "$fecha_evento"}},
                     "total_resenas": 1,
                     "promedio_puntuacion": 1,
+                    "opiniones": {
+                        "$map": {
+                            "input": "$resenas",
+                            "as": "resena",
+                            "in": {
+                                "puntuacion": "$$resena.puntuacion",
+                                "comentario": "$$resena.comentario"
+                            }
+                        }
+                    },
                     "valoracion": {
                         "$switch": {
                             "branches": [

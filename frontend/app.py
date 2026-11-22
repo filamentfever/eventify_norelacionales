@@ -14,6 +14,8 @@ def pedir(metodo, ruta, **kwargs):
     """Llama a la API. Devuelve (datos, error)."""
     try:
         r = requests.request(metodo, f"{API_URL}{ruta}", timeout=15, **kwargs)
+    except requests.exceptions.Timeout:
+        return None, "La API tardó demasiado en responder. Revisa el estado antes de repetir la operación."
     except requests.exceptions.ConnectionError:
         return None, "No se pudo conectar con la API. ¿Está corriendo uvicorn?"
     if r.status_code >= 400:
@@ -47,15 +49,19 @@ def formulario_evento(prefijo, ev=None, n_tickets=1):
         fecha_dt = datetime.now()
     fecha_dt = fecha_dt.replace(second=0, microsecond=0)
 
-    estados = ESTADOS if ev.get("estado", "programado") in ESTADOS else ESTADOS + [ev["estado"]]
+    estado_actual = ev.get("estado", "programado")
+    estados = {
+        "finalizado": ["finalizado"],
+        "cancelado": ["cancelado"]
+    }.get(estado_actual, ESTADOS if estado_actual in ESTADOS else ESTADOS + [estado_actual])
     k = lambda campo: f"{prefijo}_{campo}"
 
     a, b = st.columns(2)
     nombre = a.text_input("Nombre", ev.get("nombre", ""), key=k("nombre"))
     codigo = b.text_input("Código lugar", ev.get("codigo_lugar", "REC-TEMU-01"), key=k("codigo"))
     categoria = a.text_input("Categoría", ev.get("categoria", "Concierto"), key=k("categoria"))
-    estado = b.selectbox("Estado", estados, index=estados.index(ev.get("estado", "programado")),
-                         key=k("estado"))
+    estado = b.selectbox("Estado", estados, index=estados.index(estado_actual),
+                         key=k("estado"), disabled=len(estados) == 1)
     descripcion = st.text_area("Descripción", ev.get("descripcion", ""), key=k("descripcion"))
     fecha = a.date_input("Fecha del evento", fecha_dt.date(), key=k("fecha"))
     hora = b.time_input("Hora", fecha_dt.time(), key=k("hora"))
@@ -181,6 +187,10 @@ with tab1:
                          title="Gasto total por ciudad", labels={"gasto_total": "Gasto total ($)"})
             st.plotly_chart(fig, use_container_width=True)
 
+            if not rut.strip():
+                with st.expander("Desglose por usuario y ciudad"):
+                    st.dataframe(df_gasto, use_container_width=True, hide_index=True)
+
             if datos["detalle"]:
                 st.write("Detalle de compras")
                 st.dataframe(pd.DataFrame(datos["detalle"]), use_container_width=True)
@@ -198,7 +208,7 @@ with tab2:
         # Resumen general
         exitosos = int((df["etiqueta"] == "Exitoso").sum())
         m1, m2, m3 = st.columns(3)
-        m1.metric("Eventos con ventas", len(df))
+        m1.metric("Eventos evaluados", len(df))
         m2.metric("Exitosos (≥ 40% vendido)", exitosos)
         m3.metric("Por mejorar", len(df) - exitosos)
 
@@ -276,7 +286,19 @@ with tab4:
                      labels={"promedio_puntuacion": "Puntuación promedio"})
         fig.update_yaxes(range=[0, 5])
         st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df.drop(columns="opiniones"), use_container_width=True, hide_index=True)
+        seleccion = st.selectbox(
+            "Opiniones de un evento",
+            options=df.index,
+            format_func=lambda i: f"{df.at[i, 'evento']} · {df.at[i, 'ciudad']} · {df.at[i, 'fecha']}"
+        )
+        opiniones = df.at[seleccion, "opiniones"]
+        if opiniones:
+            st.dataframe(pd.DataFrame(opiniones), use_container_width=True, hide_index=True)
+        else:
+            st.info("Este evento todavía no tiene reseñas.")
+    else:
+        st.info("Todavía no hay eventos finalizados.")
 
 # ---------------------------------------------------- Administración
 with tab5:

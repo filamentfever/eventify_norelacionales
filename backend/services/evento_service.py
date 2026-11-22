@@ -36,58 +36,65 @@ def agregar_evento(evento: Evento) -> dict:
     }
 
 
-def _anular_ordenes(evento_oid) -> int:
-    """Al cancelar un evento, sus órdenes pagadas o pendientes quedan anuladas.
-    Así dejan de contar en los KPIs y en las consultas del dashboard."""
-    resultado = db.ordenes_compra.update_many(
-        {"evento_id": evento_oid, "estado": {"$in": ["pagada", "pendiente"]}},
-        {"$set": {"estado": "anulada", "confirmado": False}}
-    )
-    return resultado.modified_count
+def _cancelar_evento(evento_oid, cambios=None):
+    """Cancela el evento y anula sus órdenes en una transacción de MongoDB."""
+    def cancelar(session):
+        actual = db.eventos.find_one({"_id": evento_oid}, {"estado": 1}, session=session)
+        if not actual:
+            return None
+        if actual["estado"] == "finalizado":
+            raise ValueError("No se puede cancelar un evento finalizado.")
+        if actual["estado"] == "cancelado" and cambios is None:
+            raise ValueError("El evento ya está cancelado.")
+
+        db.eventos.update_one(
+            {"_id": evento_oid},
+            {"$set": {**(cambios or {}), "estado": "cancelado"}},
+            session=session
+        )
+        ordenes = db.ordenes_compra.update_many(
+            {"evento_id": evento_oid, "estado": {"$in": ["pagada", "pendiente"]}},
+            {"$set": {"estado": "anulada", "confirmado": False}},
+            session=session
+        )
+        return ordenes.modified_count
+
+    with db.client.start_session() as session:
+        return session.with_transaction(cancelar)
 
 
 def actualizar_evento(evento_id: str, evento: Evento):
-    """Actualiza un evento existente. Retorna None si no existe.
-    Lanza ValueError si se intenta cancelar un evento finalizado."""
     if not ObjectId.is_valid(evento_id):
         return None
     oid = ObjectId(evento_id)
+    cambios = evento.model_dump()
 
-    actual = db.eventos.find_one({"_id": oid}, {"estado": 1})
-    if not actual:
-        return None
+    if evento.estado == "cancelado":
+        anuladas = _cancelar_evento(oid, cambios)
+        if anuladas is None:
+            return None
+        return {"mensaje": "Evento actualizado correctamente", "ordenes_anuladas": anuladas}
 
-    if actual["estado"] == "finalizado" and evento.estado == "cancelado":
-        raise ValueError("No se puede cancelar un evento finalizado: forma parte del historial.")
-
-    db.eventos.update_one({"_id": oid}, {"$set": evento.model_dump()})
-
-    # Si se cancela por esta vía, se aplican las mismas consecuencias que en la baja
-    if evento.estado == "cancelado" and actual["estado"] != "cancelado":
-        _anular_ordenes(oid)
+    estados_editables = ["programado", "finalizado"] if evento.estado == "finalizado" else ["programado"]
+    resultado = db.eventos.update_one(
+        {"_id": oid, "estado": {"$in": estados_editables}},
+        {"$set": cambios}
+    )
+    if resultado.matched_count == 0:
+        if not db.eventos.find_one({"_id": oid}, {"_id": 1}):
+            return None
+        raise ValueError("Un evento finalizado o cancelado no se puede reactivar.")
 
     return {"mensaje": "Evento actualizado correctamente"}
 
 
 def eliminar_evento(evento_id: str):
-    """Baja lógica: el evento pasa a 'cancelado' y sus órdenes se anulan.
-    No se borra nada de la base. Retorna None si no existe.
-    Lanza ValueError si el evento está finalizado o ya cancelado."""
     if not ObjectId.is_valid(evento_id):
         return None
-    oid = ObjectId(evento_id)
 
-    evento = db.eventos.find_one({"_id": oid}, {"estado": 1})
-    if not evento:
+    anuladas = _cancelar_evento(ObjectId(evento_id))
+    if anuladas is None:
         return None
-
-    if evento["estado"] == "finalizado":
-        raise ValueError("No se puede dar de baja un evento finalizado: forma parte del historial.")
-    if evento["estado"] == "cancelado":
-        raise ValueError("El evento ya está cancelado.")
-
-    db.eventos.update_one({"_id": oid}, {"$set": {"estado": "cancelado"}})
-    anuladas = _anular_ordenes(oid)
 
     return {
         "mensaje": "Evento dado de baja (cancelado)",
