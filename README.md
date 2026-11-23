@@ -1,6 +1,6 @@
 ﻿# Eventify Analytics
 
-Proyecto del Grupo 4 para la Evaluación 3 de BDY0101. Permite analizar ventas, compras y satisfacción, consultar entradas disponibles y administrar eventos.
+Permite analizar ventas, compras y satisfacción, consultar entradas disponibles y administrar eventos.
 
 ## Arquitectura
 
@@ -56,7 +56,7 @@ Las rutas de la tabla usan el prefijo `/api/v1`.
 
 - **Recaudación total.** Suma los importes de las órdenes pagadas y refleja los ingresos registrados por ventas.
 - **Promedio por orden pagada.** Divide la recaudación por el número de órdenes pagadas para medir el valor medio de una compra. Una orden puede contener varias entradas.
-- **Puntuación promedio.** Promedia individualmente las puntuaciones de las reseñas para medir la experiencia de los asistentes que evaluaron un evento.
+- **Puntuación promedio.** Promedia individualmente las puntuaciones de las reseñas para medir la experiencia de los asistentes que evaluaron un evento. 
 
 ## Cómo demostrar el sistema
 
