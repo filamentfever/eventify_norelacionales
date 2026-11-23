@@ -14,8 +14,8 @@ Clona el repositorio, abre PowerShell en la carpeta que contiene `requirements.t
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
+pip install -r requirements.txt
+copy .env.example .env
 ```
 
 Si ya tienes un `.env`, conserva ese archivo. Configura `MONGO_URI` con la conexión a Atlas y `DATABASE_NAME=eventify_db` si usaste el nombre del script de carga. Mantén el `.env` fuera de Git. Para ejecutar la baja transaccional, usa Atlas o un conjunto de réplicas de MongoDB. La cuenta de prueba necesita permisos de lectura y escritura en su base.
@@ -25,11 +25,11 @@ En Atlas, comprueba que la base tenga las colecciones `usuarios`, `eventos`, `or
 Con la base cargada, ejecuta cada comando en su propia terminal, desde la carpeta del proyecto:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload
+uvicorn backend.main:app --reload
 ```
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run frontend/app.py
+streamlit run frontend/app.py
 ```
 
 Abre [Swagger](http://127.0.0.1:8000/docs) para explorar la API y el [dashboard](http://localhost:8501) para usar Streamlit. Si PyMongo muestra un error de resolución SRV, comprueba que tu red resuelva los registros del clúster. También puedes usar una cadena estándar de Atlas que empiece por `mongodb://`, con los hosts, TLS y demás opciones que indique Atlas.
@@ -67,3 +67,4 @@ Las rutas de la tabla usan el prefijo `/api/v1`.
 
 
 
+[2bu34uhs]
