@@ -1,12 +1,42 @@
 ﻿# Eventify Analytics
 
-Permite analizar ventas, compras y satisfacción, consultar entradas disponibles y administrar eventos.
+Dashboard y API REST para analizar ventas, compras y satisfacción de la plataforma Eventify, consultar entradas disponibles y administrar eventos.
 
-## Arquitectura
+**Evaluación 3 · BDY0101 · Grupo 4**
+
+Integrantes: Martina Cordova e Ignacio Retamal. 
+
+## Arquitectura y flujo de datos
 
 `Streamlit + Plotly → HTTP/JSON → FastAPI → PyMongo → MongoDB Atlas`
 
-FastAPI recibe las solicitudes en `backend/controllers`, concentra las operaciones y agregaciones en `backend/services` y valida los datos con los esquemas de `backend/models`. El backend maneja la conexión a Atlas. Streamlit consulta la API y presenta las visualizaciones y formularios en `frontend/app.py`.
+1. La persona usa el dashboard en Streamlit (`frontend/app.py`), que nunca se conecta a MongoDB.
+2. Streamlit llama a la API por HTTP.
+3. En FastAPI, el controller (`backend/controllers`) recibe la solicitud y valida los datos con los modelos Pydantic (`backend/models`).
+4. El service (`backend/services`) ejecuta las consultas y agregaciones con PyMongo sobre Atlas.
+5. La API responde JSON y Plotly lo dibuja en el dashboard.
+
+```
+eventify_norelacionales/
+├── backend/
+│   ├── controllers/   endpoints HTTP
+│   ├── models/        esquemas Pydantic de las 4 colecciones
+│   ├── services/      lógica de negocio y consultas de agregación
+│   ├── database.py    conexión a Atlas
+│   └── main.py        aplicación FastAPI
+├── frontend/
+│   └── app.py         dashboard Streamlit
+├── esquema/
+│   └── grupo4_eventify.mongodb.js   script de carga de la base (Evaluación 2)
+├── requirements.txt
+└── README.md
+```
+
+## Requisitos
+
+- Python 3.10 o superior (el código usa anotaciones como `str | None`).
+- Un cluster de MongoDB Atlas con un usuario de base de datos con permisos de lectura y escritura.
+- En Atlas, tu IP actual permitida en **Network Access**. Sin esto la conexión queda colgada.
 
 ## Instalación local en Windows
 
@@ -14,15 +44,36 @@ Clona el repositorio, abre PowerShell en la carpeta que contiene `requirements.t
 
 ```powershell
 python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Si ya tienes un `.env`, conserva ese archivo. Configura `MONGO_URI` con la conexión a Atlas y `DATABASE_NAME=eventify_db` si usaste el nombre del script de carga. Mantén el `.env` fuera de Git. Para ejecutar la baja transaccional, usa Atlas o un conjunto de réplicas de MongoDB. La cuenta de prueba necesita permisos de lectura y escritura en su base.
+Si PowerShell bloquea la activación del entorno (error de *Execution Policy*), permite scripts solo en esa terminal y vuelve a activarlo:
 
-En Atlas, comprueba que la base tenga las colecciones `usuarios`, `eventos`, `ordenes_compra` y `resenas_evaluaciones`. Si debes poblar una base de demostración desde cero, usa el archivo `grupo4_eventify.mongodb.js` de la Evaluación 2 con un entorno compatible con MongoDB Playgrounds. **El script elimina y vuelve a crear esas cuatro colecciones en `eventify_db`. Úsalo solo en una base de demostración desechable.**
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.venv\Scripts\activate
+```
 
-Con la base cargada, ejecuta cada comando en su propia terminal, desde la carpeta del proyecto:
+Cuando el entorno esté activo, la línea de la terminal empieza con `(.venv)`.
+
+Abre el `.env` y completa:
+
+```
+MONGO_URI=mongodb+srv://USUARIO:CLAVE@cluster0.xxxxx.mongodb.net/
+DATABASE_NAME=eventify_db
+```
+
+## Carga de la base de datos
+
+En Atlas, comprueba que la base tenga las colecciones `usuarios`, `eventos`, `ordenes_compra` y `resenas_evaluaciones`. Si debes poblarla desde cero, ejecuta completo el archivo `esquema/grupo4_eventify.mongodb.js` (por ejemplo con la extensión de MongoDB para VS Code o con mongosh).
+
+**El script elimina y vuelve a crear esas cuatro colecciones en `eventify_db`. Úsalo solo en una base de demostración desechable.** También sirve para restaurar los datos originales después de probar bajas de eventos.
+
+## Ejecución
+
+Ejecuta cada comando en su propia terminal, desde la carpeta del proyecto y con el entorno activo:
 
 ```powershell
 uvicorn backend.main:app --reload
@@ -32,7 +83,7 @@ uvicorn backend.main:app --reload
 streamlit run frontend/app.py
 ```
 
-Abre [Swagger](http://127.0.0.1:8000/docs) para explorar la API y el [dashboard](http://localhost:8501) para usar Streamlit. Si PyMongo muestra un error de resolución SRV, comprueba que tu red resuelva los registros del clúster. También puedes usar una cadena estándar de Atlas que empiece por `mongodb://`, con los hosts, TLS y demás opciones que indique Atlas.
+Abre [Swagger](http://127.0.0.1:8000/docs) para explorar la API y el [dashboard](http://localhost:8501) para usar Streamlit. 
 
 ## Endpoints y visualizaciones
 
@@ -40,31 +91,33 @@ Las rutas de la tabla usan el prefijo `/api/v1`.
 
 | Método y ruta | Resultado |
 | --- | --- |
-| `GET /kpis` | Recaudación total, promedio por orden pagada y puntuación promedio. |
-| `GET /consultas/compras-usuario` | Filtros opcionales `rut` y `ciudad`. Gráfico de gasto por ciudad y desglose de usuarios o detalle de compras. |
-| `GET /consultas/ventas-por-evento` | Recaudación y porcentaje vendido en gráficos comparativos. Incluye eventos programados y finalizados con cero ventas. |
-| `GET /consultas/eventos-futuros` | Tabla filtrada por `ciudad` y `precio_maximo`. Muestra tickets con stock y precio estrictamente menor al límite. |
-| `GET /consultas/satisfaccion` | Gráfico de puntuación de eventos finalizados, cantidad de reseñas y opiniones consultables. |
+| `GET /kpis` | **KPIs.** Recaudación total, promedio por orden pagada y puntuación promedio. |
+| `GET /consultas/compras-usuario` | **Consulta 1.** Filtro opcional `rut` (y `ciudad` en la API). El gráfico muestra el gasto por ciudad; la ciudad elegida en el dashboard se resalta y filtra el detalle de compras. |
+| `GET /consultas/ventas-por-evento` | **Consulta 2.** Recaudación, ocupación y clasificación Exitoso / Por Mejorar. El dashboard permite filtrar por clasificación y ordenar por mayor o menor recaudación. Incluye eventos programados y finalizados con cero ventas. |
+| `GET /consultas/eventos-futuros` | **Consulta 3.** Tabla filtrada por `ciudad` y `precio_maximo`. Muestra tickets con stock y precio estrictamente menor al límite. |
+| `GET /consultas/satisfaccion` | **Consulta 4 (libre).** Puntuación de eventos finalizados, cantidad de reseñas y opiniones consultables. El dashboard la presenta con una dona de resumen y un filtro por nivel de satisfacción. |
 | `GET, POST /eventos/` | Listado y alta de eventos. |
-| `GET, PUT, DELETE /eventos/{evento_id}` | Detalle, edición y baja lógica. La baja anula órdenes pagadas y pendientes en la misma transacción. |
+| `GET, PUT, DELETE /eventos/{evento_id}` | Detalle, edición y baja lógica. |
 | `GET, POST /usuarios/` | Listado y alta de usuarios. |
 | `GET /usuarios/{usuario_id}` | Detalle de un usuario. |
 | `GET /ordenes/`, `GET /ordenes/{orden_id}` | Listado y detalle de órdenes. |
 | `GET /resenas/`, `GET /resenas/{resena_id}` | Listado y detalle de reseñas. |
 
+### Consulta 4: satisfacción de eventos finalizados
+
+**Pregunta de negocio:** ¿qué eventos finalizados dejaron más satisfechos a los asistentes y cuáles necesitan mejoras?
+
+Un evento se clasifica como Excelente (promedio ≥ 4.5), Bueno (≥ 3.5), Por mejorar (menos de 3.5) o Sin reseñas. La consulta usa `$lookup`, `$map`, `$switch`, `$ifNull`, `$avg`, `$size`, `$round` y `$dateToString`.
+
 ## Indicadores de negocio
 
-- **Recaudación total.** Suma los importes de las órdenes pagadas y refleja los ingresos registrados por ventas.
-- **Promedio por orden pagada.** Divide la recaudación por el número de órdenes pagadas para medir el valor medio de una compra. Una orden puede contener varias entradas.
-- **Puntuación promedio.** Promedia individualmente las puntuaciones de las reseñas para medir la experiencia de los asistentes que evaluaron un evento. 
+- **Recaudación total.** Mide el ingreso real de la plataforma y permite evaluar su desempeño comercial. Las órdenes anuladas o pendientes no cuentan.
+- **Promedio por orden pagada.** Indica cuánto gasta una persona por compra y apoya decisiones sobre precios y paquetes de entradas.
+- **Puntuación promedio.** Permite detectar problemas de experiencia aunque las ventas sean buenas.
 
-## Cómo demostrar el sistema
+## Reglas de negocio
 
-1. Abre el dashboard y verifica las tres tarjetas de KPIs.
-2. En Compras por usuario, usa el RUT precargado y selecciona Temuco. Quita el RUT para mostrar la comparación por ciudad.
-3. Compara las ventas y la ocupación, busca tickets en Santiago y abre las opiniones de un evento finalizado.
-4. En una base de demostración, crea un evento programado, cambia el precio de una entrada y da de baja el evento. Para demostrar el cambio en la recaudación, usa un evento de prueba que ya tenga una orden pagada. La baja conserva el evento como cancelado para efectos de historial.
+- **Baja lógica:** `DELETE /eventos/{id}` no borra datos. El evento pasa a `cancelado` y sus órdenes pagadas o pendientes pasan a `anulada`, todo en una sola transacción. Como los KPIs y las consultas solo cuentan órdenes pagadas, se actualizan solos y el historial se conserva.
+- Un evento **finalizado** no se puede cancelar, y uno finalizado o cancelado no se puede reactivar (la API responde `409`).
+- Un evento se clasifica como **Exitoso** si vendió al menos el 40 % de su stock inicial.
 
-
-
-[2bu34uhs]

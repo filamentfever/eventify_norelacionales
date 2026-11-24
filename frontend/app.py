@@ -166,34 +166,57 @@ with tab1:
     st.subheader("Gasto por ciudad y detalle de compras")
     col_a, col_b = st.columns(2)
     rut = col_a.text_input("RUT del usuario (vacío = todos los usuarios)", "10754246-2")
-    ciudad_sel = col_b.selectbox("Ciudad", ["Todas"] + ciudades, key="c1_ciudad")
+    ciudad_sel = col_b.selectbox("Ciudad (resalta en el gráfico y filtra el detalle)",
+                                 ["Todas"] + ciudades, key="c1_ciudad")
 
-    params = {}
-    if rut.strip():
-        params["rut"] = rut.strip()
-    if ciudad_sel != "Todas":
-        params["ciudad"] = ciudad_sel
-
+    # La ciudad NO se envía a la API: así el gráfico siempre muestra la distribución completa
+    params = {"rut": rut.strip()} if rut.strip() else {}
     datos, error = pedir("GET", "/consultas/compras-usuario", params=params)
     if error:
         st.error(error)
     else:
         df_gasto = pd.DataFrame(datos["gasto_por_ciudad"])
         if df_gasto.empty:
-            st.info("No hay compras pagadas con esos filtros.")
+            st.info("No hay compras pagadas para ese usuario.")
         else:
-            por_ciudad = df_gasto.groupby("ciudad", as_index=False)["gasto_total"].sum()
-            fig = px.bar(por_ciudad, x="ciudad", y="gasto_total", text_auto=".3s",
-                         title="Gasto total por ciudad", labels={"gasto_total": "Gasto total ($)"})
-            st.plotly_chart(fig, use_container_width=True)
+            por_ciudad = (df_gasto.groupby("ciudad", as_index=False)["gasto_total"].sum()
+                          .sort_values("gasto_total", ascending=False))
+
+            if len(por_ciudad) == 1:
+                # Una sola ciudad: una barra aislada no aporta, se muestra como indicador
+                fila = por_ciudad.iloc[0]
+                st.metric(f"Gasto total en {fila['ciudad']}", f"${fila['gasto_total']:,.0f}")
+            else:
+                if ciudad_sel == "Todas":
+                    fig = px.bar(por_ciudad, x="ciudad", y="gasto_total", text="gasto_total",
+                                 title="Gasto total por ciudad",
+                                 labels={"gasto_total": "Gasto total ($)", "ciudad": "Ciudad"})
+                else:
+                    por_ciudad["Selección"] = por_ciudad["ciudad"].apply(
+                        lambda c: "Seleccionada" if c == ciudad_sel else "Otras ciudades")
+                    fig = px.bar(por_ciudad, x="ciudad", y="gasto_total", text="gasto_total",
+                                 color="Selección",
+                                 color_discrete_map={"Seleccionada": "#1f77b4",
+                                                     "Otras ciudades": "#7f7f7f"},
+                                 title="Gasto total por ciudad",
+                                 labels={"gasto_total": "Gasto total ($)", "ciudad": "Ciudad"})
+                fig.update_traces(texttemplate="$%{y:,.0f}", textposition="outside")
+                st.plotly_chart(fig, use_container_width=True)
 
             if not rut.strip():
                 with st.expander("Desglose por usuario y ciudad"):
-                    st.dataframe(df_gasto, use_container_width=True, hide_index=True)
+                    desglose = df_gasto if ciudad_sel == "Todas" else df_gasto[df_gasto["ciudad"] == ciudad_sel]
+                    st.dataframe(desglose, use_container_width=True, hide_index=True)
 
-            if datos["detalle"]:
+            detalle = pd.DataFrame(datos["detalle"])
+            if not detalle.empty:
+                if ciudad_sel != "Todas":
+                    detalle = detalle[detalle["ciudad"] == ciudad_sel]
                 st.write("Detalle de compras")
-                st.dataframe(pd.DataFrame(datos["detalle"]), use_container_width=True)
+                if detalle.empty:
+                    st.info("Este usuario no tiene compras pagadas en esa ciudad.")
+                else:
+                    st.dataframe(detalle, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------- Consulta 2
 with tab2:
@@ -205,55 +228,80 @@ with tab2:
         df = pd.DataFrame(datos)
         colores = {"Exitoso": "#2ca02c", "Por Mejorar": "#d62728"}
 
-        # Resumen general
+        # Resumen general (siempre sobre todos los eventos)
         exitosos = int((df["etiqueta"] == "Exitoso").sum())
         m1, m2, m3 = st.columns(3)
         m1.metric("Eventos evaluados", len(df))
         m2.metric("Exitosos (≥ 40% vendido)", exitosos)
         m3.metric("Por mejorar", len(df) - exitosos)
 
-        # Cuántos eventos mostrar en los gráficos
-        if len(df) > 5:
-            top = st.slider("Eventos a mostrar (los de mayor recaudación)",
-                            5, len(df), min(10, len(df)))
+        # Controles: qué clasificación ver y desde qué extremo de la recaudación
+        f1, f2 = st.columns(2)
+        clasificacion = f1.radio("Clasificación", ["Todos", "Exitoso", "Por Mejorar"],
+                                 horizontal=True, key="c2_clasificacion")
+        orden = f2.radio("Ordenar por recaudación", ["Mayor recaudación", "Menor recaudación"],
+                         horizontal=True, key="c2_orden")
+        mayor = orden == "Mayor recaudación"
+
+        df_f = df if clasificacion == "Todos" else df[df["etiqueta"] == clasificacion]
+        df_f = df_f.sort_values(["total_recaudado", "evento"], ascending=[not mayor, True])
+
+        if df_f.empty:
+            st.info("No hay eventos con esa clasificación.")
         else:
-            top = len(df)
-        df_top = df.nlargest(top, "total_recaudado")
+            if len(df_f) > 5:
+                top = st.slider("Cantidad de eventos a mostrar", 5, len(df_f), min(10, len(df_f)))
+            else:
+                top = len(df_f)
+            df_top = df_f.head(top)
+            orden_eventos = df_top["evento"].tolist()  # de arriba hacia abajo
 
-        fig1 = px.bar(df_top, x="total_recaudado", y="evento", orientation="h",
-                      color="etiqueta", color_discrete_map=colores,
-                      text="total_recaudado",
-                      hover_data=["ciudad", "tickets_vendidos", "porcentaje_venta"],
-                      title=f"Top {top} eventos por recaudación",
-                      labels={"total_recaudado": "Recaudado ($)", "evento": "",
-                              "etiqueta": "Clasificación"})
-        fig1.update_traces(texttemplate="$%{x:,.0f}", textposition="outside", cliponaxis=False)
-        fig1.update_layout(yaxis={"categoryorder": "total ascending"},
-                           height=max(350, 45 * top), legend_title_text="")
-        st.plotly_chart(fig1, use_container_width=True)
+            criterio = "mayor" if mayor else "menor"
+            sufijo = "" if clasificacion == "Todos" else f" · {clasificacion}"
+            st.caption(f"Mostrando {top} de {len(df_f)} eventos, ordenados de {criterio} a "
+                       f"{'menor' if mayor else 'mayor'} recaudación.")
 
-        fig2 = px.bar(df_top, x="porcentaje_venta", y="evento", orientation="h",
-                      color="etiqueta", color_discrete_map=colores,
-                      text="porcentaje_venta",
-                      hover_data=["ciudad", "tickets_vendidos", "stock_inicial_total"],
-                      title=f"Ocupación de los Top {top} (% del stock inicial vendido)",
-                      labels={"porcentaje_venta": "% vendido", "evento": "",
-                              "etiqueta": "Clasificación"})
-        fig2.update_traces(texttemplate="%{x}%", textposition="outside", cliponaxis=False)
-        fig2.add_vline(x=40, line_dash="dash", annotation_text="Umbral 'Exitoso' (40%)")
-        fig2.update_layout(yaxis={"categoryorder": "total ascending"},
-                           xaxis_range=[0, max(100, df_top["porcentaje_venta"].max() * 1.1)],
-                           height=max(350, 45 * top), legend_title_text="")
-        st.plotly_chart(fig2, use_container_width=True)
+            def formatear(fig):
+                """Mismo orden vertical en ambos gráficos y barras alineadas."""
+                fig.update_yaxes(categoryorder="array", categoryarray=orden_eventos,
+                                 autorange="reversed")
+                fig.update_traces(offsetgroup="barras", textposition="outside", cliponaxis=False)
+                fig.update_layout(barmode="overlay", legend_title_text="",
+                                  height=max(350, 45 * top))
 
-        st.write("Detalle completo")
-        st.dataframe(
-            df, use_container_width=True, hide_index=True,
-            column_config={
-                "total_recaudado": st.column_config.NumberColumn("Recaudado", format="$%d"),
-                "porcentaje_venta": st.column_config.NumberColumn("% vendido", format="%.1f"),
-            }
-        )
+            fig1 = px.bar(df_top, x="total_recaudado", y="evento", orientation="h",
+                          color="etiqueta", color_discrete_map=colores,
+                          text="total_recaudado",
+                          hover_data=["ciudad", "tickets_vendidos", "porcentaje_venta"],
+                          title=f"{top} eventos con {criterio} recaudación{sufijo}",
+                          labels={"total_recaudado": "Recaudado ($)", "evento": "",
+                                  "etiqueta": "Clasificación"})
+            fig1.update_traces(texttemplate="$%{x:,.0f}")
+            formatear(fig1)
+            st.plotly_chart(fig1, use_container_width=True)
+
+            fig2 = px.bar(df_top, x="porcentaje_venta", y="evento", orientation="h",
+                          color="etiqueta", color_discrete_map=colores,
+                          text="porcentaje_venta",
+                          hover_data=["ciudad", "tickets_vendidos", "stock_inicial_total"],
+                          title="Ocupación de esos eventos (% del stock inicial vendido)",
+                          labels={"porcentaje_venta": "% vendido", "evento": "",
+                                  "etiqueta": "Clasificación"})
+            fig2.update_traces(texttemplate="%{x}%")
+            fig2.add_vline(x=40, line_dash="dash", line_color="#ff9f1c", line_width=2)
+            fig2.update_xaxes(title_text="% vendido (la línea punteada marca el umbral 'Exitoso': 40%)")
+            formatear(fig2)
+            fig2.update_layout(xaxis_range=[0, max(100, df_top["porcentaje_venta"].max() * 1.1)])
+            st.plotly_chart(fig2, use_container_width=True)
+
+            st.write("Detalle")
+            st.dataframe(
+                df_f, use_container_width=True, hide_index=True,
+                column_config={
+                    "total_recaudado": st.column_config.NumberColumn("Recaudado", format="$%d"),
+                    "porcentaje_venta": st.column_config.NumberColumn("% vendido", format="%.1f"),
+                }
+            )
 
 # ---------------------------------------------------- Consulta 3
 with tab3:
@@ -280,23 +328,59 @@ with tab4:
         st.error(error)
     elif datos:
         df = pd.DataFrame(datos)
-        fig = px.bar(df, x="evento", y="promedio_puntuacion", color="valoracion",
-                     hover_data=["total_resenas", "ciudad", "categoria"],
-                     title="Puntuación promedio por evento",
-                     labels={"promedio_puntuacion": "Puntuación promedio"})
-        fig.update_yaxes(range=[0, 5])
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df.drop(columns="opiniones"), use_container_width=True, hide_index=True)
-        seleccion = st.selectbox(
-            "Opiniones de un evento",
-            options=df.index,
-            format_func=lambda i: f"{df.at[i, 'evento']} · {df.at[i, 'ciudad']} · {df.at[i, 'fecha']}"
-        )
-        opiniones = df.at[seleccion, "opiniones"]
-        if opiniones:
-            st.dataframe(pd.DataFrame(opiniones), use_container_width=True, hide_index=True)
-        else:
-            st.info("Este evento todavía no tiene reseñas.")
+        orden = ["Excelente", "Bueno", "Por mejorar", "Sin reseñas"]
+        colores_val = {"Excelente": "#2ca02c", "Bueno": "#1f77b4",
+                       "Por mejorar": "#d62728", "Sin reseñas": "#7f7f7f"}
+
+        # Resumen: cuántos eventos hay en cada nivel de satisfacción
+        resumen = (df["valoracion"].value_counts().reindex(orden).dropna().astype(int)
+                   .rename_axis("valoracion").reset_index(name="eventos"))
+
+        col_resumen, col_detalle = st.columns([1, 2])
+
+        with col_resumen:
+            fig_dona = px.pie(resumen, names="valoracion", values="eventos", hole=0.5,
+                              color="valoracion", color_discrete_map=colores_val,
+                              title="Eventos por nivel de satisfacción")
+            fig_dona.update_traces(textinfo="value+percent", sort=False)
+            fig_dona.update_layout(legend_title_text="")
+            st.plotly_chart(fig_dona, use_container_width=True)
+
+        with col_detalle:
+            # "Sin reseñas" no tiene puntuación que comparar, por eso no se ofrece como filtro
+            niveles_con_resenas = [n for n in orden[:3] if n in resumen["valoracion"].values]
+            niveles = st.multiselect("Filtrar por nivel de satisfacción",
+                                     niveles_con_resenas, default=niveles_con_resenas)
+            df_f = df[df["valoracion"].isin(niveles)]
+
+            if df_f.empty:
+                st.info("Selecciona al menos un nivel de satisfacción.")
+            else:
+                fig = px.bar(df_f, x="promedio_puntuacion", y="evento", orientation="h",
+                             color="valoracion", color_discrete_map=colores_val,
+                             text="promedio_puntuacion",
+                             hover_data=["total_resenas", "ciudad", "categoria"],
+                             title="Puntuación promedio por evento",
+                             labels={"promedio_puntuacion": "Puntuación promedio",
+                                     "evento": "", "valoracion": "Valoración"})
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_layout(yaxis={"categoryorder": "total ascending"},
+                                  xaxis_range=[0, 5.5], legend_title_text="",
+                                  height=max(300, 32 * len(df_f)))
+                st.plotly_chart(fig, use_container_width=True)
+
+        if not df_f.empty:
+            st.dataframe(df_f.drop(columns="opiniones"), use_container_width=True, hide_index=True)
+            seleccion = st.selectbox(
+                "Opiniones de un evento",
+                options=df_f.index,
+                format_func=lambda i: f"{df_f.at[i, 'evento']} · {df_f.at[i, 'ciudad']} · {df_f.at[i, 'fecha']}"
+            )
+            opiniones = df_f.at[seleccion, "opiniones"]
+            if opiniones:
+                st.dataframe(pd.DataFrame(opiniones), use_container_width=True, hide_index=True)
+            else:
+                st.info("Este evento todavía no tiene reseñas.")
     else:
         st.info("Todavía no hay eventos finalizados.")
 
